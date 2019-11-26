@@ -2,36 +2,25 @@
 #Hilary Balli, Marco Duran Perez, George Garcia
 
 library(mlbench)
+library(e1071)
 library(skimr)
 library(caret)
-library(DALEX)
-library(iml)
+#library(DALEX)
+#library(iml)
 library(corrplot)
+library(DMwR)
 library(pamr)
 library(rpart)
-library(plyr)
+#library(plyr)
 library(C50)
 library(xgboost)
+#library(catboost)
 library(caretEnsemble)
-library(AppliedPredictiveModeling)
 
-data(PimaIndiansDiabetes)
-str(PimaIndiansDiabetes)
-summary(PimaIndiansDiabetes)
-?PimaIndiansDiabetes
-
-dataPID <- na.omit(PimaIndiansDiabetes)
-View(dataPID)
-#Regression will be used.
-
-#########################
-#Data Splitting
-
-#outcome variable
-#diabetes2 <- c("neg", "pos")
-#diabetes2.factor <- factor(diabetes2)
-#diabetes <- as.numeric(diabetes2.factor)
-#str(diabetes)
+data(PimaIndiansDiabetes2) # PID2 is an updated version of the data.
+str(PimaIndiansDiabetes2)
+summary(PimaIndiansDiabetes2)
+dataPID <- PimaIndiansDiabetes2
 
 x <- subset(dataPID, select = -diabetes)
 y <- subset(dataPID, select = diabetes)
@@ -43,12 +32,14 @@ barplot(table(y),
         col = c("blue", "green"),
         main = "Diabetes")
 
-#skewness
-skew <- lapply(x, skewness)
-head(skew)
+# 1. Since we are predicting the class outcome variable 'diabetes', classification should be used.
+# The data is imbalanced (500 vs. 268) and is a 2-class situation.
+
+
+# 2. Data Splitting
 
 #set seed
-seed <- 321 
+seed <- 321
 
 #set training and testing data
 ptrain <- createDataPartition(y$diabetes,
@@ -60,72 +51,94 @@ yTest <- y[-ptrain,]
 xTrain <- x[ptrain,]
 yTrain <- y[ptrain,]
 
+
+# 3. Training data exploration
+
+#skewness
+skew <- lapply(x, skewness)
+head(skew)
+
 #skewed results
 skimmed1 <- skim_to_wide(xTrain)
 skimmed2 <- skim_to_wide(yTrain)
 View(skimmed1)
 View(skimmed2)
 
+# Skimmed1 shows there the data is missing 277 insulin values, 169 tricep values, and more.
+
+# Omit NAs and update data to proceed
+dataPID <- na.omit(PimaIndiansDiabetes2)
+x <- subset(dataPID, select = -diabetes)
+y <- subset(dataPID, select = diabetes)
+set.seed(seed)
+ptrain <- createDataPartition(y$diabetes,
+                              p = .75,
+                              list = FALSE)
+xTest <- x[-ptrain,]
+yTest <- y[-ptrain,]
+xTrain <- x[ptrain,]
+yTrain <- y[ptrain,]
+
 ###Data Visualization
 
 # Boxplots of predictors
 boxplot(xTrain)
 
-# Set predictors as numeric
-mark <- sapply(xTrain, is.factor)
-xTrainNum <- as.data.frame(lapply(xTrain, function(x) as.numeric(as.character(x))))
-
 # Histograms of predictors and outcome variables
 par(mfrow = c(3,3))
-hist(xTrainNum$pregnant)
-hist(xTrainNum$glucose)
-hist(xTrainNum$pressure)
-hist(xTrainNum$triceps)
-hist(xTrainNum$insulin)
-hist(xTrainNum$mass)
-hist(xTrainNum$pedigree)
-hist(xTrainNum$age)
+hist(xTrain$pregnant)
+hist(xTrain$glucose)
+hist(xTrain$pressure)
+hist(xTrain$triceps)
+hist(xTrain$insulin)
+hist(xTrain$mass)
+hist(xTrain$pedigree)
+hist(xTrain$age)
 hist(as.numeric(yTrain))
 
+
+# 4. Data cleaning
+
 # Correlations
-correlations <- cor(xTrainNum)
+correlations <- cor(xTrain)
 par(mfrow = c(1,1))
 corrplot(correlations, method = "number", order = "hclust")
 
-# Find and omit high correlations above threshold = 0.8
-highCorr <- findCorrelation(correlations, cutoff = 0.8)
-xTrainNum <- xTrainNum[, -highCorr]
+# No highly correlated variables are found. Since there are skewed variables, we will
+# implement 'YeoJohnson'.  Since there are a few outliers, we will implement 'spatialSign'.
+# Since some values are close to zero, we will implement 'zv' and 'nzv'.
 
-###Algorithms (with standardized cleaning)
+
+#5. Model implementation of algorithms (with standardized cleaning)
 
 # Controlled resampling
 ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
                      summaryFunction = twoClassSummary, sampling = "smote", 
-                     classProbs = TRUE, savePredictions = TRUE)
+                     classProbs = TRUE, savePredictions = "final")
 
 #nearest shrunken centroid
-gridNSC <- data.frame(threshold = seq(0, 0.5, by = 0.01))
+gridNSC <- expand.grid(threshold = seq(0.5, 2.5, by = 0.1))
 set.seed(seed)
-modelNSC <- train(x = xTrainNum, y = yTrain, 
+modelNSC <- train(x = xTrain, y = yTrain, 
                   method = "pam",
-                  preProc = c("center", "scale"),
+                  preProc = c("center", "scale", "YeoJohnson", "spatialSign", "zv", "nzv"),
                   tuneGrid = gridNSC,
                   trControl = ctrl)
-modelNSC # ROC = , Sens = , Spec = 
+modelNSC # ROC = 0.846, Sens = 0.864, Spec = 0.576
 
 #random forest
 gridRF <- expand.grid(mtry = seq(0.5, 2, by = 0.5))
 set.seed(seed)
-prandomforest <- caret::train(x = xTrain[, -20], y = yTrain, 
+prandomforest <- train(x = xTrain, y = yTrain, 
                               method = "rf", 
-                              preProc = c("center", "scale", "YeoJohnson", "corr", "spatialSign", "knnImpute", "zv", "nzv"), 
+                              preProc = c("center", "scale", "YeoJohnson", "spatialSign", "zv", "nzv"),
                               tuneGrid = gridRF,
                               trControl = ctrl)
-prandomforest #accuracy = , kappa = 
+prandomforest # ROC = 0.856, Sens = 0.785, Spec = 0.764
 
 #bagged trees
 set.seed(seed)
-ptreebag <- caret::train(x = xTrainNum, y = yTrain,
+ptreebag <- caret::train(x = xTrain, y = yTrain,
                          method = "treebag",
                          preProc = c("center", "scale", "YeoJohnson", "corr", "spatialSign", "zv", "nzv"),
                          nbagg = 50,  
@@ -134,64 +147,64 @@ ptreebag <- caret::train(x = xTrainNum, y = yTrain,
 ptreebag #ROC = .78, sens = .73, spec = .68
 
 #C5.0
-gridC5 <- expand.grid(trials = c(25:30), 
-                      model = c("tree", "rules"),
-                      winnow = c(TRUE, FALSE))
+#gridC5 <- expand.grid(trials = c(25:30), 
+#                      model = c("tree", "rules"),
+#                      winnow = c(TRUE, FALSE))
 set.seed(seed)
 modelC5 <- train(x = xTrainNum,
                  y = yTrain,
                  method = "C5.0",
                  preProc = c("center", "scale"),
-                 tuneGrid = gridC5,
+                 #tuneGrid = gridC5,
                  verbose = FALSE,
                  trControl = ctrl)
 modelC5 # ROC = , Sens = , Spec = 
 
 # eXtreme Gradient Boosted Tree
-gridXGBT <- expand.grid(nrounds = c(50, 100), 
-                        max_depth = c(1, 2),
-                        eta = c(0.4, 0.5),
-                        gamma = 0,
-                        colsample_bytree = c(0.6, 0.8),
-                        min_child_weight = 1,
-                        subsample = c(0.5, 0.75, 1.0))
+#gridXGBT <- expand.grid(nrounds = c(50, 100), 
+#                        max_depth = c(1, 2),
+#                        eta = c(0.4, 0.5),
+#                        gamma = 0,
+#                        colsample_bytree = c(0.6, 0.8),
+#                        min_child_weight = 1,
+#                        subsample = c(0.5, 0.75, 1.0))
 set.seed(seed)
 modelXGBT <- train(x = xTrainNum, y = yTrain, 
                    method = "xgbTree",
-                   tuneGrid = gridXGBT,
+                   #tuneGrid = gridXGBT,
                    preProc = c("center", "scale"), 
                    trControl = ctrl)
 modelXGBT # ROC = , Sens = , Spec = 
 
 
 # eXtreme Gradient Boosted DART
-gridXGBD <- expand.grid(nrounds = c(50, 100), 
-                        max_depth = c(1, 2),
-                        eta = c(0.2, 0.3),
-                        gamma = 0,
-                        subsample = c(0.5, 0.75, 1.0),
-                        colsample_bytree = c(0.6, 0.8),
-                        rate_drop = c(0.01, 0.25),
-                        skip_drop =  c(0.05, 0.25),
-                        min_child_weight = 1)
+#gridXGBD <- expand.grid(nrounds = c(50, 100), 
+                        #max_depth = c(1, 2),
+                        #eta = c(0.2, 0.3),
+                        #gamma = 0,
+                        #subsample = c(0.5, 0.75, 1.0),
+                        #colsample_bytree = c(0.6, 0.8),
+                        #rate_drop = c(0.01, 0.25),
+                        #skip_drop =  c(0.05, 0.25),
+                        #min_child_weight = 1)
 set.seed(seed)
 modelXGBD <- train(x = xTrainNum, y = yTrain, 
                    method = "xgbDART",
-                   tuneGrid = gridXGBD,
+                   #tuneGrid = gridXGBD,
                    preProc = c("center", "scale"), 
                    trControl = ctrl)
 modelXGBD # ROC = , Sens = , Spec = 
 
 
 # eXtreme Gradient Boosted Linear
-gridXGBL <- expand.grid(nrounds = c(40, 50, 60), 
-                        lambda = 0,
-                        alpha = 0,
-                        eta = c(0.3, 0.4))
+#gridXGBL <- expand.grid(nrounds = c(40, 50, 60), 
+#                        lambda = 0,
+#                        alpha = 0,
+#                        eta = c(0.3, 0.4))
 set.seed(seed)
 modelXGBL <- train(x = xTrainNum, y = yTrain, 
                    method = "xgbLinear",
-                   tuneGrid = gridXGBL,
+                   #tuneGrid = gridXGBL,
                    preProc = c("center", "scale"), 
                    trControl = ctrl)
 modelXGBL # ROC = , Sens = , Spec = 
